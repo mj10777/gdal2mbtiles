@@ -1,0 +1,5 @@
+
+# -r bilinear
+./gdal2mbtiles.py --mbtiles -z 4  output/1861_Mercator_Europe.tif 
+
+

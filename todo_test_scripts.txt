@@ -1,0 +1,60 @@
+from original README.rst:
+
+*Landez* manipulates tiles, builds MBTiles, does tiles compositing and arrange tiles together into single images.
+
+Tiles can either be obtained from a remote tile service URL, from a local Mapnik stylesheet,
+a WMS server or from MBTiles files.
+
+For building MBTiles, Landez embeds *mbutil* from Mapbox https://github.com/mapbox/mbutil at the final stage.
+The land covered is specified using a list of bounding boxes and zoom levels.
+
+mj10777 2014-03-04: TODO: build test scripts to test this functionality
+
+Blend tiles together
+====================
+
+Merge multiple sources of tiles (URL, WMS, MBTiles, Mapnik stylesheet) together. *(requires python PIL)*
+
+For example, build a new MBTiles by blending tiles of a MBTiles on top of OpenStreetMap tiles :
+
+::
+
+    mb = MBTilesBuilder(filepath="merged.mbtiles")
+    overlay = TilesManager(mbtiles_file="carto.mbtiles")
+    mb.add_layer(overlay)
+    mb.run()
+
+Or composite a WMS layer with OpenStreetMap using transparency (40%):
+
+:: 
+
+    mb = MBTilesBuilder(wms_server="http://yourserver.com/geoserver/wms", 
+                        wms_layers=["img:orthophoto"])
+    overlay = TilesManager(remote=True)
+    mb.add_layer(overlay, 0.4)
+    mb.run()
+
+Add post-processing filters
+===========================
+
+Convert map tiles to gray scale, more suitable for information overlay :
+
+::
+
+    from landez.filters import GrayScale
+    
+    ie = ImageExporter()
+    ie.add_filter(GrayScale())
+
+Replace a specific color by transparent pixels (i.e. color to alpha, *a-la-Gimp*) :
+
+::
+
+    from landez.filters import ColorToAlpha
+    
+    overlay = TileManager()
+    overlay.add_filter(ColorToAlpha('#ffffff'))  # white will be transparent
+    
+    ie = ImageExporter()
+    ie.add_layer(overlay)
+    ...
