@@ -646,6 +646,11 @@ class MbTiles(object):
   self.center_x=(self.bounds_east+self.bounds_west)/2
   self.center_y=(self.bounds_north+self.bounds_south)/2
   self.mbtiles_center="%f,%f,%s"%(self.center_x,self.center_y,self.default_zoom)
+  self.i_request_url_read_value=0
+  self.i_request_url_read_db=1
+  self.i_request_url_count_create=2
+  self.i_request_url_count_drop=3
+  self.i_request_url_count=-1
 
  def open_db(self,s_path_db,mbtiles_dir,mbtiles_format,s_y_type,verbose=False):
   self.s_path_db = s_path_db
@@ -682,6 +687,7 @@ class MbTiles(object):
    if self.verbose:
     logger.info(_("MbTiles : [open_db] : opening: [%s]") % self.s_path_db)
    self.fetch_metadata()
+   self.i_request_url_count=self.get_request_url_count(self.i_request_url_read_db)
 
  def close_db(self):
   if self.verbose:
@@ -773,7 +779,7 @@ class MbTiles(object):
  def insert_metadata(self,metadata_list):
   if metadata_list:
    if self.verbose:
-    # logger.info(_("MbTiles : insert_metadata:: [%s]") % metadata_list)
+    # logger.info(_("MbTiles : insert_metadata: [%s]") % metadata_list)
     pass
    try:
     # ERROR:mapmbtiles.mbtiles:MbTiles : insert_metadata: Error You must not use 8-bit bytestrings unless you use a text_factory that can interpret 8-bit bytestrings (like text_factory = str). It is highly recommended that you instead just switch your application to Unicode strings.:
@@ -801,6 +807,241 @@ class MbTiles(object):
          ('maxzoom', self.mbtiles_maxzoom)
         ]
   self.insert_metadata(values_list)
+
+ def tile_id_to_zxy(self,s_tile_id):
+  """
+  tile_id format:
+  ---------------------------
+  there are 2 type of formats: for tiles or rgb-images
+  ---
+  format-systax: z/r-x/g-y/b.tms/osm/tms
+  ---
+  'r-' or 'z-' : the red value of the rgb or the zoom-level
+  ---
+  'g-' or 'x-' : the green value of the rgb or the x-tile
+  ---
+  'b.' or 'y.' : the blue value of the rgb or the y-tile
+  ---
+  extention: '.rgb' or '.tms' or '.osm'
+  - 'rgb' will be blank images where all pixels have the same rgb-value
+  - 'osm' will be tile images where y position is in Open-Street-Map notation (North to South)
+  - 'tms' will be tile images where y position is in TMS notation (South to North)
+  ---
+  """
+  sa_split=s_tile_id.split(".")
+  value_z=0
+  value_x=0
+  value_y=0
+  value_type=""
+  if len(sa_split) == 2:
+   value_type=sa_split[1]
+   sa_split=sa_split[0].split("-")
+  if len(sa_split) == 3:
+   value_z=int(sa_split[0])
+   value_x=int(sa_split[1])
+   value_y=int(sa_split[2])
+  return value_z,value_x,value_y,value_type
+
+ def get_request_url_count(self,i_parm):
+  """
+  i_parm values:
+  ---------------------------
+  0: return existing value [set when database was opended,not reading the table] [i_request_url_read_value]
+  1 : return existing value return existing value [reading the table with count after checking if it exits] [i_request_url_read_db]
+  2: create table (if it does not exist) [i_request_url_count_create]
+  3: delete table (if it does exist) [i_request_url_count_drop]
+  """
+  if i_parm == self.i_request_url_count_drop:
+   s_sql_request_url = "DROP TABLE IF EXISTS request_url"
+   try:
+    self.mbtiles_cursor.executemany(s_sql_request_url)
+   except sqlite3.Error, e:
+    s_sql_request_url=""
+    logger.error(_("MbTiles : drop_request_url: Error %s:") % e.args[0])
+   if s_sql_request_url != "":
+    # no error [DROP was compleated correctly] table has been deleted and is empty
+    self.i_request_url_count = -1
+  elif i_parm == self.i_request_url_count_create:
+   s_sql_request_url = "CREATE TABLE IF NOT EXISTS request_url (tile_id TEXT PRIMARY KEY,tile_url TEXT)"
+   try:
+    self.mbtiles_cursor.execute(s_sql_request_url)
+   except sqlite3.Error, e:
+    s_sql_request_url=""
+    logger.error(_("MbTiles : create_request_url: Error %s:") % e.args[0])
+   if s_sql_request_url != "":
+    # no error [CREATE was compleated correctly] table has been created and is empty
+    self.i_request_url_count = 0
+  elif i_parm == self.i_request_url_read_db:
+   s_sql_request_url = "pragma table_info(request_url)"
+   try:
+    self.mbtiles_cursor.execute(s_sql_request_url)
+    pragma_result = self.mbtiles_cursor.fetchone()
+    if not pragma_result is None:
+     i_field_count=0
+     for i_field in range(len(pragma_result)):
+      s_field=pragma_result[i_field]
+      if s_field == "tile_id" or s_field == "tile_url":
+       i_field_count+=1
+     if i_field_count > 0:
+      s_sql_request_url = "SELECT count(tile_id) AS count_id FROM request_url"
+      self.mbtiles_cursor.execute(s_sql_request_url)
+      count_result = self.mbtiles_cursor.fetchone()
+      if not count_result is None:
+       self.i_request_url_count=int(count_result[0])
+   except sqlite3.Error, e:
+    s_sql_request_url=""
+    logger.error(_("MbTiles : count_request_url: Error %s:") % e.args[0])
+  elif i_parm == self.i_request_url_count_read_value:
+   # return existing value
+   pass
+  return  self.i_request_url_count
+
+ def fill_request_url(self,bounds,zoomlevels,s_request_url_source,i_parm):
+  """
+  i_parm values
+  ---------------------------
+  0: if tile_id is already exists, do not overwrite
+  1: replace tile_id
+  ---------------------------
+  fill the request_url table
+  ---------------------------
+  checking is done to neither the tile or request exist's
+  uses the same logic as in geopaparazzi
+  '{z}' - tms - zoom level
+  '{x}' - tms - x tile
+  '{y_oms}' - tms - y tile - oms notation
+  '{y_tms}' - tms - y tile - tms notation
+  if '{z}' is not found, wms logic will be used
+  """
+  b_tms=False
+  if s_request_url_source.find('{z}') != -1:
+   b_tms=True
+  mercator = GlobalMercator(self.tms_osm,self.tilesize,zoomlevels)
+  bboxlist,tile_bounds = mercator.tileslist(bounds)
+  #if self.verbose:
+  logger.debug(_("Found %s tiles for this area.") % len(bboxlist))
+  i_count=0
+  request_url_list = []
+  i_count_tiles=0
+  for (z, x, y) in sorted(bboxlist,key=operator.itemgetter(0,1,2)):
+   i_count_tiles=self.count_tiles(z,x,y,1)
+   if i_count_tiles == 0:
+    # tile is not in database
+    if i_count_tiles == 0:
+     # only if 'replace' has not been used
+     i_count_tiles=self.count_tiles(z,x,y,11)
+    # tile is not in request_url
+    if i_count_tiles == 0:
+     if not self.tms_osm:
+      y_tms=y
+      y_osm=self.flip_y(z,y_tms)
+     else:
+      y_osm=y
+      y_tms=self.flip_y(z,y_osm)
+     s_tile_id="{0}-{1}-{2}.{3}".format(str(z),str(x),str(y),self.s_y_type)
+     if b_tms:
+      s_tile_url = s_request_url_source.format(**locals())
+     else:
+      mercator = GlobalMercator(True,self.tilesize,[z])
+      bbox = mercator.tile_bbox((z, x, y_osm))
+      bbox = ','.join(map(str, bbox))
+      s_tile_url = urllib.unquote(s_request_url_source)
+      s_tile_url += "&bbox=%s" % bbox   # commas are not encoded
+     request_url_list.append((s_tile_id,s_tile_url))
+     i_count+=1
+     if i_count >= 100:
+      # save after 100 entries
+      self.insert_request_url(request_url_list)
+      request_url_list = []
+      i_count=0
+   # save what has not been saved
+   if i_count >= 0:
+    self.insert_request_url(request_url_list)
+
+ def insert_request_url(self,request_url_list):
+  if request_url_list:
+   if self.i_request_url_count < 0:
+     # create the request_url table
+     self.get_request_url_count(2)
+   if self.verbose:
+    # logger.info(_("MbTiles : insert_metadata:: [%s]") % metadata_list)
+    pass
+   try:
+    self.mbtiles_cursor.executemany("INSERT OR REPLACE INTO request_url VALUES(?,?)",request_url_list)
+    self.sqlite3_connection.commit()
+   except sqlite3.Error, e:
+    self.sqlite3_connection.rollback()
+    logger.error(_("MbTiles : insert_request_url: Error %s:") % e.args[0])
+
+ def delete_request_url(self,s_tile_id):
+  if s_tile_id:
+   if self.verbose:
+    # logger.info(_("MbTiles : delete_request_url: [%s]") % metadata_list)
+    pass
+   tile_id = (s_tile_id,)
+   try:
+    self.mbtiles_cursor.execute("DELETE FROM request_url WHERE (tile_id = ?)",tile_id)
+   except sqlite3.Error, e:
+    logger.error(_("MbTiles : delete_request_url  (%s): Error %s:") % (s_tile_id,e.args[0]))
+    s_tile_id=""
+   if s_tile_id != "":
+    self.i_request_url_count-=1
+    if self.i_request_url_count <=0:
+     # delete the request_url table
+     self.get_request_url_count(3)
+
+ def select_request_url(self,s_tile_id,limit_offset):
+  if s_tile_id:
+   if self.verbose:
+    # logger.info(_("MbTiles : delete_request_url: [%s]") % metadata_list)
+    pass
+   try:
+    result_requst_url=self.mbtiles_cursor.execute("SELECT tile_id,tile_url FROM 'request_url' WHERE ( tile_id = '?')",s_tile_id).fetchall()
+   except sqlite3.Error, e:
+    logger.error(_("MbTiles : select_request_url: Error %s:") % e.args[0])
+  else:
+   try:
+    result_requst_url=self.mbtiles_cursor.execute("SELECT tile_id,tile_url FROM 'request_url' LIMIT ? OFFSET ?",limit_offset).fetchall()
+   except sqlite3.Error, e:
+    logger.error(_("MbTiles : select_request_url: Error %s:") % e.args[0])
+  return result_requst_url
+
+ def load_request_url(self,i_parm):
+  """
+  i_parm values
+  ---------------------------
+  0: not used (yet)
+  ---------------------------
+  """
+  i_limit=100
+  i_offset=0
+  i_request_url_amount=self.i_request_url_count
+  while i_request_url_amount > 0:
+   if i_request_url_amount < i_limit:
+    i_limit=i_request_url_amount
+   result_requst_url=self.select_request_url("",(i_limit,i_offset))
+   i_offset+=i_limit
+   for i in range(len(result_requst_url)):
+    s_tile_id = result_requst_url[i][0]
+    s_tile_url = result_requst_url[i][1]
+    request = urllib2.Request(s_tile_url )
+    try:
+     response = urllib2.urlopen(request)
+    except urllib2.URLError, e:
+     if e.code == 404:
+      logger.error(_("MbTiles : dload_request_url: Error %s:") % e)
+    else:
+      # 200
+     s_content_type=response.headers['content-type']
+     if s_content_type.find('image/') != -1:
+      image_data=response.read()
+      if not image_data is None:
+       z,x,y,s_type=self.tile_id_to_zxy(s_tile_id)
+       self.insert_image(z,x,y,image_data)
+       # self.i_request_url_count will be reduced and the table deleted when empty
+       self.delete_request_url(s_tile_id)
+     else:
+      logger.error(_("MbTiles : load_request_url: image not returned: [%s]") % s_content_type)
 
  def insert_image(self,tz,tx,ty,image_data):
   if not self.s_y_type:
@@ -975,6 +1216,13 @@ class MbTiles(object):
   return image_list
 
  def count_tiles(self,tz,tx,ty,i_parm):
+  """
+   i_parm values:
+   ---------------------------
+   10: will return string tile_id if thile does not exist
+   11: count of tiles based on z,x,y values in request_url
+     1: count of tiles based on z,x,y values
+  """
   # even when empty, 0 will be returned
   if not self.s_y_type:
    self.s_y_type="tms"
@@ -983,6 +1231,12 @@ class MbTiles(object):
   if i_parm == 10:
    s_sql_command="SELECT tile_id FROM map WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?"
    tile_id = (str(tz),str(tx),str(ty))
+  if i_parm == 11:
+   if self.i_request_url_count <=0:
+     return 0
+   s_tile_id="{0}-{1}-{2}.{3}".format(str(tz), str(tx),str(ty),self.s_y_type)
+   s_sql_command="SELECT count(tile_id) FROM request_url WHERE tile_id = ?"
+   tile_id = (s_tile_id,)
   if i_parm == 0:
    s_tile_id="{0}-{1}-{2}.{3}".format(str(tz), str(tx),str(ty),self.s_y_type)
    s_sql_command="SELECT count(tile_id) FROM map WHERE tile_id = ?"
@@ -1430,6 +1684,8 @@ class TilesManager(object):
   self.grid_layer = kwargs.get('grid_layer', 0)
   # MBTiles reading
   self.mbtiles_input = kwargs.get('mbtiles_input')
+   # request_url
+  self.request_url = kwargs.get('request_url')
   # WMS requesting
   self.wms_server = kwargs.get('wms_server')
   self.wms_layers = kwargs.get('wms_layers', [])
@@ -1442,6 +1698,7 @@ class TilesManager(object):
    if 'format' in self.wms_options:
     self.tile_format = self.wms_options['format']
     logger.info(_("Tile format set to %s") % self.tile_format)
+   self.tiles_url=self.reader.request_url;
   elif self.stylefile:
    self.reader = MapnikRenderer(self.stylefile, self.tile_size)
   else:
@@ -1631,42 +1888,57 @@ class MBTilesBuilder(TilesManager):
    bbox = map(float, self.reader.mbtiles_bounds.split(','))
    zoomlevels = range(int(self.reader.mbtiles_minzoom), int(self.reader.mbtiles_maxzoom)+1)
    self.add_coverage(bbox=bbox, zoomlevels=zoomlevels)
-  # Compute list of tiles
-  tileslist = set()
-  for bbox, levels in self._bboxes:
-   logger.debug(_("MBTilesBuilder.run: Compute list of tiles for bbox %s on zooms %s.") % (bbox, levels))
-   bboxlist,tile_bounds = self.tileslist(bbox, levels,self.reader.tms_osm)
-   logger.debug(_("Add %s tiles.") % len(bboxlist))
-   tileslist = tileslist.union(bboxlist)
-   logger.debug(_("MBTilesBuilder.run: %s tiles in total.") % len(tileslist))
-  self.nbtiles = len(tileslist)
-  if not self.nbtiles:
-   raise EmptyCoverageError(_("No tiles are covered by bounding boxes : %s") % self._bboxes)
-  if i_parm == 1:
-   logger.info(_("-I-> Computed list of [%d] tiles for bbox %s on zooms %s.") % (self.nbtiles,bbox, levels))
-   logger.info(_("-I-> MBTilesBuilder.run: i_parm[%d] ; set i_parm=0 to run ; will now exit.") % i_parm)
-   return
+  if self.request_url != "":
+    if self.request_url.find('fill') == -1 and self.request_url.find('load') == -1 and self.request_url.find('replace') == -1:
+     self.request_url=""
+  if self.request_url == "":
+   # Compute list of tiles
+   tileslist = set()
+   for bbox, levels in self._bboxes:
+    logger.debug(_("MBTilesBuilder.run: Compute list of tiles for bbox %s on zooms %s.") % (bbox, levels))
+    bboxlist,tile_bounds = self.tileslist(bbox, levels,self.reader.tms_osm)
+    logger.debug(_("Add %s tiles.") % len(bboxlist))
+    tileslist = tileslist.union(bboxlist)
+    logger.debug(_("MBTilesBuilder.run: %s tiles in total.") % len(tileslist))
+   self.nbtiles = len(tileslist)
+   if not self.nbtiles:
+    raise EmptyCoverageError(_("No tiles are covered by bounding boxes : %s") % self._bboxes)
+   if i_parm == 1:
+    logger.info(_("-I-> Computed list of [%d] tiles for bbox %s on zooms %s.") % (self.nbtiles,bbox, levels))
+    logger.info(_("-I-> MBTilesBuilder.run: i_parm[%d] ; set i_parm=0 to run ; will now exit.") % i_parm)
+    return
   self.mbtiles_output=self.mbtiles_output.strip()
   self.mbtiles_output_dir=os.path.dirname(self.mbtiles_output)+ '/'
   self.mbtiles_db_output=MbTiles()
   self.mbtiles_db_output.open_db(self.mbtiles_output,self.mbtiles_output_dir,self.reader.mbtiles_format,self.reader.s_y_type,self.reader.mbtiles_verbose)
   if self.reader.metadata_input:
    self.mbtiles_db_output.insert_metadata(self.reader.metadata_input)
-  # Go through whole list of tiles and read from input_db and store in output_db
-  self.rendered = 0
-  # something is 'unsorting' this
-  for (z, x, y) in sorted(tileslist,key=operator.itemgetter(0,1,2)):
-   image_data=self.tile((z,x,y))
-   if not image_data is None:
-    self.mbtiles_db_output.insert_image(z,x,y,image_data)
-  # calculate the min/max zoom_levels and bounds
-  self.mbtiles_db_output.retrieve_bounds()
-  logger.debug(_("MBTilesBuilder.run: %s tiles were missing.") % self.rendered)
-  # Package it!
-  logger.info(_("Build MBTiles output file '%s'.") % self.mbtiles_output)
-  for metadata_list in self._metadata:
-   logger.debug(_("MBTilesBuilder.run: adding metadata %s .") % (metadata_list))
-   self.mbtiles_db_output.insert_metadata(metadata_list[0])
+  if self.request_url == "":
+   # Go through whole list of tiles and read from input_db and store in output_db
+   self.rendered = 0
+   # something is 'unsorting' this
+   for (z, x, y) in sorted(tileslist,key=operator.itemgetter(0,1,2)):
+    image_data=self.tile((z,x,y))
+    if not image_data is None:
+     self.mbtiles_db_output.insert_image(z,x,y,image_data)
+   # calculate the min/max zoom_levels and bounds
+   self.mbtiles_db_output.retrieve_bounds()
+   logger.debug(_("MBTilesBuilder.run: %s tiles were missing.") % self.rendered)
+   # Package it!
+   logger.info(_("Build MBTiles output file '%s'.") % self.mbtiles_output)
+   for metadata_list in self._metadata:
+    logger.debug(_("MBTilesBuilder.run: adding metadata %s .") % (metadata_list))
+    self.mbtiles_db_output.insert_metadata(metadata_list[0])
+  else:
+   if self.request_url.find('fill') != -1:
+    i_parm=0
+    if self.request_url.find('replace') != -1:
+     i_parm=1
+    for bbox, levels in self._bboxes:
+     self.mbtiles_db_output.fill_request_url(bbox,levels,self.tiles_url,i_parm)
+   if self.request_url.find('load') != -1:
+    i_parm=0
+    self.mbtiles_db_output.load_request_url(i_parm)
   self.mbtiles_db_output.close_db()
 
 # from Landez project
@@ -1870,7 +2142,7 @@ class ImageExporter(TilesManager):
   geo_transform = [xmin, (xmax-xmin)/image_width, 0, ymax, 0, (ymin-ymax)/image_height ]
   spatial_projection = osr.SpatialReference()
   spatial_projection.ImportFromEPSG(i_srid)
-  logger.info(_("-I-> geotif_image: Saveing as GeoTiff - image[%s] compression[%s]") % (imagepath,self.tiff_compression))
+  logger.info(_("-I-> geotif_image: Saving as GeoTiff - image[%s] compression[%s]") % (imagepath,self.tiff_compression))
   image_dataset = gdal.Open(image_gdal, gdal.GA_Update )
   image_dataset.SetProjection(spatial_projection.ExportToWkt())
   image_dataset.SetGeoTransform(geo_transform)
@@ -1953,6 +2225,9 @@ class WMSReader(TileSource):
   if parse_version(self.wmsParams['version']) >= parse_version('1.3'):
    projectionKey = 'crs'
   self.wmsParams[projectionKey] = GlobalMercator.WSG84
+  encodedparams = urllib.urlencode(self.wmsParams)
+  # this can be sent to the mbtiles request_url logic
+  self.request_url = "%s?%s" % (self.url.encode("utf8"), encodedparams)
 
  def tile(self, z, x, y_tms):
   logger.debug(_("Request WMS tile %s") % ((z, x, y_tms),))
@@ -1962,8 +2237,9 @@ class WMSReader(TileSource):
   # bbox = mercator.project(bbox[:2]) + mercator.project(bbox[2:])
   bbox = ','.join(map(str, bbox))
   # Build WMS request URL
-  encodedparams = urllib.urlencode(self.wmsParams)
-  url = "%s?%s" % (self.url, encodedparams)
+  # encodedparams = urllib.urlencode(self.wmsParams)
+  # url = "%s?%s" % (self.url, encodedparams)
+  url = self.request_url
   url += "&bbox=%s" % bbox   # commas are not encoded
   try:
    logger.debug(_("Download '%s'") % url)
