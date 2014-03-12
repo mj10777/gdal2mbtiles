@@ -9,8 +9,8 @@ logging.basicConfig(level=logging.DEBUG)
 output_directory="output"
 # i_parm=0: run programm ; = 1 show info only and return
 i_parm=0
-i_min_level=0
-i_max_level=1
+i_min_level=3
+i_max_level=3
 #----------------------------------------------------------------------------------
 for i_loop in range(i_min_level,i_max_level+1):
  if i_loop == 0:
@@ -92,5 +92,36 @@ for i_loop in range(i_min_level,i_max_level+1):
   i_parm=1
   mb_step3.run(True,i_parm)
   del mb_step3
+ #----------------------------------------------------------------------------------
+ if i_loop == 3:
+  # set the optput file name
+  Output_filepath="%s/berlin_zoom.mbtiles" % output_directory
+  print  "Loop: ",i_loop,"\nOutput: ",Output_filepath
+  # http://fbinter.stadt-berlin.de/fb/wms/senstadt/k_vms_detailnetz_wms_spatial?service=WMS&request=GetMap&version=1.1.1&layers=0,1,2,3,4&styles=visual&srs=EPSG:4326&format=image/jpeg&width=3840&height=2880&bbox=13.33,52.5,13.35,52.6
+  # as default: 'jpg' images in the mbtiles files are stored as 'jpg' with 75% quality
+  # - here we will override this default and force the storage of 'png'
+  # mbtiles only supports 'jpg' or 'png'
+  s_wms_server="http://fbinter.stadt-berlin.de/fb/wms/senstadt/berlinzoom"
+  s_wms_layers="0"
+  parm_wms_options=dict(format="image/jpeg")
+  mb_step4 = MBTilesBuilder(mbtiles_output=Output_filepath,wms_server=s_wms_server,wms_layers=[s_wms_layers],wms_options=parm_wms_options)
+  # up to zoom 15 (inclusive) : blank images
+  mb_step4.add_coverage(bbox=(12.9709,52.3005,13.8109,52.6954), zoomlevels=[12])
+  # use u'äöüßÄÖÜ' syntax in insure unicode when inserting into sqlite3
+  metadata_list = [
+          (u'name',u'Berlin-Zoom'),
+          (u'description',u'Berlin in verschiedenen Kartengrundlagen. Detaillierung beim Zoomen. 1:250 - 1:210.000'),
+          (u'center',u'13.3777065575123,52.5162690144797,17'),
+         ]
+  mb_step4.add_metadata(metadata_list)
+  # with 'False' we are telling MBTilesBuilder to exit if the file exists
+  # with 'True' we are telling MBTilesBuilder to use an existing mbtiles file
+  # i_parm=0: run programm ; = 1 show info only and return
+  # - if no parmameters are given: 'False,0' is assumed
+  # Request WMS tile (18, 140652, 176348)
+  # (13.0928, 52.3454, 13.7501, 52.6688)
+  # i_parm=1
+  mb_step4.run(True,i_parm)
+  del mb_step4
  #----------------------------------------------------------------------------------
 

@@ -71,6 +71,7 @@ try:
  import numpy
  from xml.etree import ElementTree
  import osgeo.gdal_array as gdalarray
+ logging.basicConfig()
 except:
  # 'antialias' resampling is not available
  pass
@@ -654,6 +655,12 @@ class MbTiles(object):
 
  def open_db(self,s_path_db,mbtiles_dir,mbtiles_format,s_y_type,verbose=False):
   self.s_path_db = s_path_db
+  if os.path.isdir(s_path_db):
+   if s_path_db.endswith(os.pathsep):
+    s_path_db = s_path_db[:-1]
+   s_path_db+=".mbtiles"
+   self.s_path_db = s_path_db
+   mbtiles_dir=os.path.dirname(self.s_path_db)+ '/'
   self.mbtiles_dir=mbtiles_dir.strip()
   if self.mbtiles_dir == "":
    self.mbtiles_dir=os.path.dirname(self.mbtiles_file)+ '/'
@@ -919,8 +926,11 @@ class MbTiles(object):
   mercator = GlobalMercator(self.tms_osm,self.tilesize,zoomlevels)
   bboxlist,tile_bounds = mercator.tileslist(bounds)
   #if self.verbose:
-  logger.debug(_("Found %s tiles for this area.") % len(bboxlist))
+  count_bboxlist=float(len(bboxlist))
+  logger.info(_("Found %s tiles for this area.") % len(bboxlist))
+  #
   i_count=0
+  i_count_total=0
   request_url_list = []
   i_count_tiles=0
   for (z, x, y) in sorted(bboxlist,key=operator.itemgetter(0,1,2)):
@@ -950,8 +960,11 @@ class MbTiles(object):
      request_url_list.append((s_tile_id,s_tile_url))
      i_count+=1
      if i_count >= 100:
+      i_count_total+=i_count
       # save after 100 entries
       self.insert_request_url(request_url_list)
+      if not self.verbose:
+       gdal.TermProgress_nocb(float(i_count_total)/count_bboxlist)
       request_url_list = []
       i_count=0
    # save what has not been saved
@@ -1042,6 +1055,8 @@ class MbTiles(object):
        self.delete_request_url(s_tile_id)
      else:
       logger.error(_("MbTiles : load_request_url: image not returned: [%s]") % s_content_type)
+   if not self.verbose:
+    gdal.TermProgress_nocb(float(i_offset)/float(i_request_url_amount))
 
  def insert_image(self,tz,tx,ty,image_data):
   if not self.s_y_type:
@@ -1671,6 +1686,8 @@ class TilesManager(object):
   tile_size -- default tile size (default DEFAULT_TILE_SIZE)
   tile_format -- default tile format (default DEFAULT_TILE_FORMAT)
   """
+  self.verbose=False
+  self.request_url=""
   self.tile_size = kwargs.get('tile_size', DEFAULT_TILE_SIZE)
   self.tile_format = kwargs.get('tile_format', DEFAULT_TILE_FORMAT)
   # Tiles Download
@@ -1697,7 +1714,8 @@ class TilesManager(object):
    self.reader = WMSReader(self.wms_server, self.wms_layers,self.tile_size, **self.wms_options)
    if 'format' in self.wms_options:
     self.tile_format = self.wms_options['format']
-    logger.info(_("Tile format set to %s") % self.tile_format)
+    if self.verbose:
+     logger.info(_("Tile format set to %s") % self.tile_format)
    self.tiles_url=self.reader.request_url;
   elif self.stylefile:
    self.reader = MapnikRenderer(self.stylefile, self.tile_size)
@@ -1705,7 +1723,8 @@ class TilesManager(object):
    mimetype, encoding = mimetypes.guess_type(self.tiles_url)
    if mimetype and mimetype != self.tile_format:
     self.tile_format = mimetype
-    logger.info(_("Tile format set to %s") % self.tile_format)
+    if self.verbose:
+     logger.info(_("Tile format set to %s") % self.tile_format)
    self.reader = TileDownloader(self.tiles_url, headers=self.tiles_headers,subdomains=self.tiles_subdomains, tilesize=self.tile_size)
    self.reader.mbtiles_format=self.tile_format
   # Tile files extensions
@@ -1843,6 +1862,8 @@ class MBTilesBuilder(TilesManager):
   self.nbtiles = 0
   self._bboxes = []
   self._metadata = []
+  self.verbose=False
+  self.request_url=""
 
  def add_coverage(self, bbox, zoomlevels):
   """
@@ -1889,7 +1910,7 @@ class MBTilesBuilder(TilesManager):
    zoomlevels = range(int(self.reader.mbtiles_minzoom), int(self.reader.mbtiles_maxzoom)+1)
    self.add_coverage(bbox=bbox, zoomlevels=zoomlevels)
   if self.request_url != "":
-    if self.request_url.find('fill') == -1 and self.request_url.find('load') == -1 and self.request_url.find('replace') == -1:
+   if self.request_url.find('fill') == -1 and self.request_url.find('load') == -1 and self.request_url.find('replace') == -1:
      self.request_url=""
   if self.request_url == "":
    # Compute list of tiles
