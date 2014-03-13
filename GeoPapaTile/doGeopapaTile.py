@@ -264,6 +264,7 @@ class GeopapaTileDialog(QDialog, Ui_GeopapaTile):
         gdal2mbtiles="gdal2mbtiles.py"
         gdal2mbtiles_parm="--mbtiles"
         if platform.system() == "Windows":
+                gdal2mbtiles="gdal2mbtiles.bat"
                 gdal2tiles="gdal2tiles.bat"
         else:
                 gdal2tiles="gdal2tiles.py"
